@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { Chess, Square } from 'chess.js';
 
 /**
- * Chess Grandmaster 3D — Real pieces, full logic, animated theme
- * Humanized: PBR pieces, checkmate/stalemate/draw, sky + particles
+ * Chess Grandmaster 3D — Real pieces, full logic, static theme, robot levels
+ * Humanized: PBR pieces, all logics, no moving elements, robot Easy/Medium/Hard
  */
 export class ChessBoard3D {
   private scene: THREE.Scene;
@@ -17,24 +17,26 @@ export class ChessBoard3D {
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
   private stockfish: Worker | null = null;
-  private animating: { mesh: THREE.Group, from: THREE.Vector3, to: THREE.Vector3, t: number } | null = null;
-  private particles: THREE.Points | null = null;
+  // Robot settings
+  private vsRobot = true;
+  private robotLevel: 'easy' | 'medium' | 'hard' = 'medium';
+  private robotColor: 'w' | 'b' = 'b'; // robot plays black by default
 
   constructor(containerId: string) {
     this.scene = new THREE.Scene();
-    // Animated sky gradient via fog + background
+    // Static theme — no moving fog, just clean dark blue
     this.scene.background = new THREE.Color(0x0f172a);
-    this.scene.fog = new THREE.Fog(0x1e293b, 12, 30);
+    this.scene.fog = new THREE.Fog(0x0f172a, 14, 28);
 
     this.camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
-    this.camera.position.set(0, 11, 7); this.camera.lookAt(0,0,0);
+    this.camera.position.set(0, 10, 7); this.camera.lookAt(0,0,0);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.1;
+    this.renderer.toneMappingExposure = 1.05;
 
     const container = document.getElementById(containerId) || document.body;
     const old = container.querySelector('canvas');
@@ -43,19 +45,19 @@ export class ChessBoard3D {
     else document.body.appendChild(this.renderer.domElement);
     this.renderer.domElement.style.display = 'block';
     this.renderer.domElement.style.margin = '0 auto';
-    this.renderer.domElement.style.boxShadow = '0 20px 60px rgba(0,0,0,0.5)';
+    this.renderer.domElement.style.boxShadow = '0 12px 40px rgba(0,0,0,0.4)';
 
-    // Lights — high quality, moving sun
-    const sun = new THREE.DirectionalLight(0xfff7e6, 1.1); sun.position.set(6,12,4); sun.castShadow=true;
+    // Lights — static, no moving sun
+    const sun = new THREE.DirectionalLight(0xfff7e6, 1.0); sun.position.set(6,12,4); sun.castShadow=true;
     sun.shadow.mapSize.set(2048,2048); sun.shadow.camera.near=0.5; sun.shadow.camera.far=30;
     this.scene.add(sun);
-    const fill = new THREE.HemisphereLight(0x87ceeb, 0x1e293b, 0.7); this.scene.add(fill);
+    const fill = new THREE.HemisphereLight(0x87ceeb, 0x1e293b, 0.65); this.scene.add(fill);
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.35));
 
-    // Animated background elements — floating orbs + stars
-    this.createBackground();
+    // Static background — no orbs, just subtle stars (static)
+    this.createStaticBackground();
 
-    // Board 8x8 — wood PBR
+    // Board 8x8
     for(let r=0;r<8;r++) for(let c=0;c<8;c++){
       const isLight = (r+c)%2===0;
       const sq = new THREE.Mesh(
@@ -68,7 +70,6 @@ export class ChessBoard3D {
       this.squares.push(sq);
       this.boardGroup.add(sq);
     }
-    // Border
     const border = new THREE.Mesh(new THREE.BoxGeometry(9,0.1,9), new THREE.MeshStandardMaterial({ color: 0x3f2a14, roughness: 0.9 }));
     border.position.y = -0.2; border.receiveShadow=true; this.boardGroup.add(border);
 
@@ -77,7 +78,7 @@ export class ChessBoard3D {
 
     try { this.stockfish = new Worker('/stockfish.js'); } catch {}
 
-    // Controls
+    // Controls — drag to orbit, but no auto-move
     this.renderer.domElement.addEventListener('click', this.onClick.bind(this));
     this.renderer.domElement.addEventListener('contextmenu', e=>e.preventDefault());
     let isDragging=false, lastX=0, lastY=0;
@@ -94,34 +95,66 @@ export class ChessBoard3D {
     });
     this.renderer.domElement.addEventListener('touchstart', e=>{ lastX=e.touches[0].clientX; lastY=e.touches[0].clientY; });
     this.renderer.domElement.addEventListener('touchmove', e=>{
-      const dx=e.touches[0].clientX-lastX, dy=e.touches[0].clientY-lastY;
+      const dx=e.touches[0].clientX-lastX;
       this.boardGroup.rotation.y+=dx*0.005;
-      lastX=e.touches[0].clientX; lastY=e.touches[0].clientY;
+      lastX=e.touches[0].clientX;
       e.preventDefault();
     }, {passive:false});
     window.addEventListener('resize', ()=>{ this.camera.aspect=window.innerWidth/window.innerHeight; this.camera.updateProjectionMatrix(); this.renderer.setSize(window.innerWidth, window.innerHeight);});
 
-    // HUD
+    this.createRobotUI();
     this.updateStatus();
   }
 
-  private createBackground() {
-    // Star field
+  private createStaticBackground() {
+    // Static stars — no rotation, no orbs
     const starGeo = new THREE.BufferGeometry();
-    const starCount=400;
+    const starCount=300;
     const pos=new Float32Array(starCount*3);
-    for(let i=0;i<starCount;i++){ pos[i*3]= (Math.random()-0.5)*60; pos[i*3+1]= 8+Math.random()*12; pos[i*3+2]= (Math.random()-0.5)*60; }
+    for(let i=0;i<starCount;i++){ pos[i*3]= (Math.random()-0.5)*50; pos[i*3+1]= 10+Math.random()*8; pos[i*3+2]= (Math.random()-0.5)*50; }
     starGeo.setAttribute('position', new THREE.BufferAttribute(pos,3));
-    const stars=new THREE.Points(starGeo, new THREE.PointsMaterial({ color:0xffffff, size:0.06, transparent:true, opacity:0.7 }));
-    (this.scene as any).userData = { stars };
+    const stars=new THREE.Points(starGeo, new THREE.PointsMaterial({ color:0xffffff, size:0.05, transparent:true, opacity:0.5 }));
     this.scene.add(stars);
-    // Floating orbs
-    for(let i=0;i<3;i++){
-      const orb=new THREE.Mesh(new THREE.SphereGeometry(0.12,16,16), new THREE.MeshStandardMaterial({ color: 0xfacc15, emissive: 0xfacc15, emissiveIntensity: 0.6 }));
-      orb.position.set((Math.random()-0.5)*10, 5+Math.random()*3, (Math.random()-0.5)*10);
-      (orb as any).userData = { baseY: orb.position.y, phase: Math.random()*Math.PI*2 };
-      this.scene.add(orb);
-    }
+    // Static ground accent — no moving orbs
+  }
+
+  private createRobotUI() {
+    // HUD controls for robot
+    const hud = document.getElementById('hud');
+    if (!hud) return;
+    // Add controls if not already
+    if (document.getElementById('robot-controls')) return;
+    const controls = document.createElement('div');
+    controls.id = 'robot-controls';
+    controls.style.marginTop = '8px';
+    controls.style.display = 'flex';
+    controls.style.gap = '8px';
+    controls.style.alignItems = 'center';
+    controls.innerHTML = `
+      <label style="font-size:11px; color:#cbd5e1;">vs <select id="vsMode" style="background:#1e293b;color:#fff;border:1px solid #334155;border-radius:4px;padding:2px 4px;">
+        <option value="robot" selected>Robot</option>
+        <option value="friend">Friend</option>
+      </select></label>
+      <label style="font-size:11px; color:#cbd5e1;">Level <select id="robotLevel" style="background:#1e293b;color:#fff;border:1px solid #334155;border-radius:4px;padding:2px 4px;">
+        <option value="easy">Easy</option>
+        <option value="medium" selected>Medium</option>
+        <option value="hard">Hard</option>
+      </select></label>
+      <button id="newGameBtn" style="background:#0ea5e9;color:#fff;border:none;border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;">New Game</button>
+    `;
+    hud.appendChild(controls);
+    const vsMode = document.getElementById('vsMode') as HTMLSelectElement;
+    const level = document.getElementById('robotLevel') as HTMLSelectElement;
+    const newBtn = document.getElementById('newGameBtn') as HTMLButtonElement;
+    vsMode?.addEventListener('change', ()=>{ this.vsRobot = vsMode.value==='robot'; this.updateStatus(); });
+    level?.addEventListener('change', ()=>{ this.robotLevel = level.value as any; this.updateStatus(); });
+    newBtn?.addEventListener('click', ()=>{ this.chess.reset(); this.createPieces(); this.updateStatus(); });
+  }
+
+  private getRobotDepth(): number {
+    if (this.robotLevel==='easy') return 8;
+    if (this.robotLevel==='hard') return 18;
+    return 12; // medium
   }
 
   private createPieceMesh(type:string, isWhite:boolean): THREE.Group {
@@ -129,23 +162,18 @@ export class ChessBoard3D {
     const color=isWhite?0xf8fafc:0x0f172a;
     const mat=new THREE.MeshStandardMaterial({ color, metalness:0.25, roughness:0.45 });
     const accent=new THREE.MeshStandardMaterial({ color: isWhite?0xe2e8f0:0x334155, roughness:0.7 });
-
-    // Base
     const base=new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.38,0.12,24), mat);
     base.position.y=0.06; base.castShadow=true; group.add(base);
-
     if(type==='p'){
       const body=new THREE.Mesh(new THREE.CylinderGeometry(0.22,0.28,0.45,16), mat); body.position.y=0.32; body.castShadow=true; group.add(body);
       const head=new THREE.Mesh(new THREE.SphereGeometry(0.20,16,12), mat); head.position.y=0.62; group.add(head);
     } else if(type==='r'){
       const col=new THREE.Mesh(new THREE.CylinderGeometry(0.24,0.26,0.55,16), mat); col.position.y=0.38; group.add(col);
       const top=new THREE.Mesh(new THREE.BoxGeometry(0.55,0.14,0.55), mat); top.position.y=0.72; group.add(top);
-      // crenellations
       for(let x of [-0.18,0.18]) for(let z of [-0.18,0.18]){
         const cren=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.10,0.12), mat); cren.position.set(x,0.83,z); group.add(cren);
       }
     } else if(type==='n'){
-      // Knight horse
       const body=new THREE.Mesh(new THREE.BoxGeometry(0.38,0.4,0.55), mat); body.position.set(0,0.42, -0.05); group.add(body);
       const neck=new THREE.Mesh(new THREE.CylinderGeometry(0.14,0.18,0.45,12), mat); neck.position.set(0,0.68,0.18); neck.rotation.x=0.4; group.add(neck);
       const head=new THREE.Mesh(new THREE.BoxGeometry(0.28,0.28,0.42), mat); head.position.set(0,0.88,0.35); group.add(head);
@@ -171,7 +199,6 @@ export class ChessBoard3D {
   }
 
   private createPieces() {
-    // Keep squares (first 64 are squares, 1 border = 65, so keep 65)
     this.boardGroup.children.slice(65).forEach(m=>this.boardGroup.remove(m));
     this.pieces.clear();
     const fen=this.chess.fen().split(' ')[0];
@@ -196,7 +223,6 @@ export class ChessBoard3D {
     this.squares.forEach(sq=>{
       const isLight = ((sq as any).userData.r + (sq as any).userData.c)%2===0;
       (sq.material as THREE.MeshStandardMaterial).color.set(isLight?0xf0d9b5:0xb58863);
-      (sq.material as THREE.MeshStandardMaterial).emissive?.setHex(0x000000);
     });
     if(this.selected){
       const sq=this.squares.find(s=>(s as any).userData.square===this.selected);
@@ -207,7 +233,6 @@ export class ChessBoard3D {
         if(t){
           const isCapture = !!m.captured;
           (t.material as THREE.MeshStandardMaterial).color.set(isCapture?0xfca5a5:0xbbf7d0);
-          // dot for quiet, ring for capture
         }
       });
     }
@@ -237,7 +262,6 @@ export class ChessBoard3D {
     else {
       const pieceHits=this.raycaster.intersectObjects(Array.from(this.pieces.values()), true);
       if(pieceHits.length>0){
-        // find parent group
         let obj:any=pieceHits[0].object;
         while(obj && !obj.userData?.square) obj=obj.parent;
         if(obj) square=obj.userData.square;
@@ -248,6 +272,10 @@ export class ChessBoard3D {
   }
 
   private handleSquareClick(square:string){
+    // If vsRobot and it's robot's turn, ignore clicks
+    if(this.vsRobot && this.chess.turn()===this.robotColor){
+      return;
+    }
     const piece=this.chess.get(square as Square);
     const turn=this.chess.turn();
     if(!this.selected){
@@ -255,12 +283,11 @@ export class ChessBoard3D {
       return;
     }
     if(piece && piece.color===turn){ this.selected=square; this.highlight(); return; }
-    // Try move with promotion to queen
     const from=this.selected;
     try{
       const move=this.chess.move({ from: from as Square, to: square as Square, promotion: 'q' });
       if(move){
-        this.animateMove(from, square, move.captured);
+        this.animateMove(from, square, !!move.captured);
         this.selected=null;
         this.createPieces();
         this.updateStatus();
@@ -269,15 +296,16 @@ export class ChessBoard3D {
           setTimeout(()=>this.showGameOver(), 300);
           return;
         }
-        if(this.chess.turn()==='b'){
+        // Robot move if enabled
+        if(this.vsRobot && this.chess.turn()===this.robotColor){
           setTimeout(async()=>{
-            const best=await this.bestMove(14);
+            const best=await this.bestMove(this.getRobotDepth());
             const f=best.slice(0,2), t=best.slice(2,4);
             try{
               const m=this.chess.move({from: f as Square, to: t as Square, promotion:'q'});
-              if(m){ this.animateMove(f,t,m.captured); this.createPieces(); this.updateStatus(); this.highlight(); if(this.chess.isGameOver()) setTimeout(()=>this.showGameOver(),300); }
+              if(m){ this.animateMove(f,t,!!m.captured); this.createPieces(); this.updateStatus(); this.highlight(); if(this.chess.isGameOver()) setTimeout(()=>this.showGameOver(),300); }
             } catch{}
-          }, 500);
+          }, 600);
         }
       } else { this.selected=null; this.highlight(); }
     } catch{ this.selected=null; this.highlight(); }
@@ -289,22 +317,19 @@ export class ChessBoard3D {
     const fromPos=mesh.position.clone();
     const toC=to.charCodeAt(0)-97, toR=8-parseInt(to[1]);
     const toPos=new THREE.Vector3(toC-3.5, mesh.position.y, toR-3.5);
-    // simple lerp animation
     let t=0;
     const anim=()=>{
-      t+=0.12;
+      t+=0.14;
       if(t>=1){ mesh.position.copy(toPos); return; }
       mesh.position.lerpVectors(fromPos, toPos, t);
-      // arc
-      mesh.position.y = fromPos.y + Math.sin(t*Math.PI)*0.8;
+      mesh.position.y = fromPos.y + Math.sin(t*Math.PI)*0.9;
       requestAnimationFrame(anim);
     };
     anim();
-    // capture particle
     if(captured){
       const p=new THREE.Mesh(new THREE.SphereGeometry(0.08,8,8), new THREE.MeshStandardMaterial({ color:0xfacc15, emissive:0xfacc15, emissiveIntensity:0.8 }));
       p.position.copy(toPos).y+=0.5; this.boardGroup.add(p);
-      let a=0; const fa=()=>{ a+=0.08; p.position.y+=0.04; (p.material as any).opacity=1-a; (p.material as any).transparent=true; if(a<1) requestAnimationFrame(fa); else this.boardGroup.remove(p); }; fa();
+      let a=0; const fa=()=>{ a+=0.09; p.position.y+=0.05; (p.material as any).opacity=1-a; (p.material as any).transparent=true; if(a<1) requestAnimationFrame(fa); else this.boardGroup.remove(p); }; fa();
     }
   }
 
@@ -318,42 +343,40 @@ export class ChessBoard3D {
     else msg='Game over';
     const el=document.getElementById('status');
     if(el) el.textContent=msg;
-    setTimeout(()=>alert(msg + '\n\nClick OK to play again. Press New Game.'), 100);
+    setTimeout(()=>alert(msg + '\n\nClick OK for New Game'), 100);
   }
 
   private updateStatus(){
     const el=document.getElementById('status');
     if(!el) return;
-    if(this.chess.isCheckmate()) el.textContent=`Checkmate! ${this.chess.turn()==='w'?'Black':'White'} wins`;
-    else if(this.chess.isStalemate()) el.textContent='Stalemate — Draw';
-    else if(this.chess.isThreefoldRepetition()) el.textContent='Draw by repetition';
-    else if(this.chess.isDraw()) el.textContent='Draw';
-    else el.textContent=`${this.chess.turn()==='w'?'White':'Black'} to move${this.chess.inCheck()?' — Check!':''} | ELO ${1500+Math.floor(Math.random()*20-10)}`;
-    const fenEl=document.getElementById('fen') as any;
-    if(fenEl) fenEl.textContent=this.chess.fen();
+    let base='';
+    if(this.chess.isCheckmate()) base=`Checkmate! ${this.chess.turn()==='w'?'Black':'White'} wins`;
+    else if(this.chess.isStalemate()) base='Stalemate — Draw';
+    else if(this.chess.isThreefoldRepetition()) base='Draw by repetition';
+    else if(this.chess.isDraw()) base='Draw';
+    else base=`${this.chess.turn()==='w'?'White':'Black'} to move${this.chess.inCheck()?' — Check!':''}`;
+    const mode = this.vsRobot ? ` vs Robot (${this.robotLevel})` : ' vs Friend';
+    el.textContent = base + mode;
   }
 
   start() {
-    let t=0;
     const animate = () => {
       requestAnimationFrame(animate);
-      t+=0.008;
-      // Animate orbs and stars
-      this.scene.children.forEach(o=>{
-        if((o as any).userData?.baseY!==undefined){
-          (o as any).position.y = (o as any).userData.baseY + Math.sin(t*0.7 + (o as any).userData.phase)*0.4;
-        }
-      });
-      const stars=(this.scene as any).userData?.stars as THREE.Points;
-      if(stars) stars.rotation.y += 0.0002;
-      // Gentle board breathing
-      this.boardGroup.position.y = Math.sin(t*0.5)*0.04;
+      // No moving elements — static theme, just render
       this.renderer.render(this.scene, this.camera);
     };
     animate();
     this.updateStatus();
+    // Auto-start robot if robot is white and it's white's turn (rare)
+    if(this.vsRobot && this.chess.turn()===this.robotColor){
+      setTimeout(async()=>{
+        const best=await this.bestMove(this.getRobotDepth());
+        const f=best.slice(0,2), t=best.slice(2,4);
+        try{ this.chess.move({from:f as Square, to:t as Square, promotion:'q'}); this.createPieces(); this.updateStatus(); } catch{}
+      }, 800);
+    }
   }
 
   move(from:string,to:string){ try{ this.chess.move({from:from as Square,to:to as Square}); this.createPieces(); return true;} catch{ return false; } }
-  bestMove(depth=12): Promise<string>{ return new Promise(res=>{ if(!this.stockfish){ res('e7e5'); return; } this.stockfish.postMessage(`position fen ${this.chess.fen()}`); this.stockfish.postMessage(`go depth ${depth}`); this.stockfish.onmessage=(e)=>{ const m=(e.data as string).match(/bestmove (\w+)/); if(m) res(m[1]);}; setTimeout(()=>res('e7e5'), 900); }); }
+  bestMove(depth?:number): Promise<string>{ const d=depth ?? this.getRobotDepth(); return new Promise(res=>{ if(!this.stockfish){ res('e7e5'); return; } this.stockfish.postMessage(`position fen ${this.chess.fen()}`); this.stockfish.postMessage(`go depth ${d}`); this.stockfish.onmessage=(e)=>{ const m=(e.data as string).match(/bestmove (\w+)/); if(m) res(m[1]);}; setTimeout(()=>res('e7e5'), 1000); }); }
 }
