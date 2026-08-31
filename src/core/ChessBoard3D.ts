@@ -378,5 +378,43 @@ export class ChessBoard3D {
   }
 
   move(from:string,to:string){ try{ this.chess.move({from:from as Square,to:to as Square}); this.createPieces(); return true;} catch{ return false; } }
-  bestMove(depth?:number): Promise<string>{ const d=depth ?? this.getRobotDepth(); return new Promise(res=>{ if(!this.stockfish){ res('e7e5'); return; } this.stockfish.postMessage(`position fen ${this.chess.fen()}`); this.stockfish.postMessage(`go depth ${d}`); this.stockfish.onmessage=(e)=>{ const m=(e.data as string).match(/bestmove (\w+)/); if(m) res(m[1]);}; setTimeout(()=>res('e7e5'), 1000); }); }
+  bestMove(depth?:number): Promise<string>{
+    const d=depth ?? this.getRobotDepth();
+    // Humanized fallback: if Stockfish missing, pick legal move based on level
+    const pickRandomMove=()=>{
+      const moves=this.chess.moves({ verbose:true }) as any[];
+      if(!moves.length) return 'e7e5';
+      // Easy: pure random, Medium: random but slight preference, Hard: try to avoid blunders (still random fallback)
+      if(this.robotLevel==='easy'){
+        const m=moves[Math.floor(Math.random()*moves.length)]; return m.from + m.to + (m.promotion||'');
+      } else if(this.robotLevel==='hard' && (this as any).stockfish){
+        // hard will wait for Stockfish, fallback to best-ish random
+        const caps=moves.filter((m:any)=>m.captured);
+        if(caps.length && Math.random()>0.3){ const m=caps[Math.floor(Math.random()*caps.length)]; return m.from+m.to+(m.promotion||''); }
+      }
+      const m=moves[Math.floor(Math.random()*moves.length)]; return m.from+m.to+(m.promotion||'');
+    };
+    return new Promise(res=>{
+      if(!this.stockfish){
+        res(pickRandomMove());
+        return;
+      }
+      let settled=false;
+      const timer=setTimeout(()=>{ if(!settled){ settled=true; res(pickRandomMove()); } }, 900);
+      this.stockfish.postMessage(`position fen ${this.chess.fen()}`);
+      this.stockfish.postMessage(`go depth ${d}`);
+      this.stockfish.onmessage=(e)=>{
+        const m=(e.data as string).match(/bestmove (\w+)/);
+        if(m && !settled){
+          settled=true; clearTimeout(timer);
+          // Validate move is legal, else fallback
+          const from=m[1].slice(0,2), to=m[1].slice(2,4);
+          const legal=this.chess.moves({ square: from as Square, verbose:true } as any) as any[];
+          const ok=legal.some((x:any)=>x.to===to);
+          if(ok) res(m[1]);
+          else res(pickRandomMove());
+        }
+      };
+    });
+  }
 }
